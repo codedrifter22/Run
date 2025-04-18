@@ -1,0 +1,182 @@
+<!DOCTYPE html><html lang="sk">
+<head>
+    <meta charset="UTF-8">
+    <title>Sledovanie s mapou</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        #map { height: 300px; margin-bottom: 15px; }
+        .speed-item { margin-bottom: 5px; }
+        .green { color: green; }
+        .red { color: red; }
+        .gray { color: gray; }
+        label { display: block; margin: 10px 0; }
+    </style>
+</head>
+<body>
+    <h1>Sledovanie s mapou</h1>
+    <div id="map"></div><p id="position">Načítavanie polohy...</p>
+<p id="speed" class="gray">Rýchlosť: 0 km/h</p>
+<p id="distanceTravelled">Prešiel si: 0 m</p>
+
+<label>
+    <input type="radio" name="mode" value="exact" checked>
+    Presný režim (ignorovať pohyby < 2 m)
+</label>
+<label>
+    <input type="radio" name="mode" value="free">
+    Voľný režim (započítať každý pohyb)
+</label>
+
+<button id="resetButton">Vynulovať</button>
+
+<h2>Priemerné rýchlosti v úseku 25m:</h2>
+<div id="speedList"></div>
+
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script>
+    let map = L.map('map').setView([48.15, 17.1], 15);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+    }).addTo(map);
+
+    let route = L.polyline([], { color: 'blue' }).addTo(map);
+    let marker = null;
+
+    let lastPosition = null;
+    let totalDistance = 0;
+    let segmentDistance = 0;
+    let lastDistanceReport = 0;
+    let speedReadings = [];
+    let currentMode = "exact";
+
+    const positionEl = document.getElementById("position");
+    const speedEl = document.getElementById("speed");
+    const distanceEl = document.getElementById("distanceTravelled");
+    const speedListEl = document.getElementById("speedList");
+    const resetBtn = document.getElementById("resetButton");
+
+    document.querySelectorAll("input[name='mode']").forEach(input => {
+        input.addEventListener("change", (e) => {
+            currentMode = e.target.value;
+        });
+    });
+
+    function haversine(lat1, lon1, lat2, lon2) {
+        const R = 6371000;
+        const toRad = x => x * Math.PI / 180;
+        const dLat = toRad(lat2 - lat1);
+        const dLon = toRad(lon2 - lon1);
+        const a = Math.sin(dLat / 2) ** 2 +
+                  Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+                  Math.sin(dLon / 2) ** 2;
+        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
+
+    function updateMap(lat, lon) {
+        if (!marker) {
+            marker = L.marker([lat, lon]).addTo(map);
+        } else {
+            marker.setLatLng([lat, lon]);
+        }
+        route.addLatLng([lat, lon]);
+        map.panTo([lat, lon]);
+    }
+
+    function updatePosition(position) {
+        const coords = position.coords;
+        if (coords.accuracy > 15) return;
+
+        positionEl.textContent = `Lat: ${coords.latitude.toFixed(5)}, Lon: ${coords.longitude.toFixed(5)}`;
+
+        if (lastPosition) {
+            const distance = haversine(
+                lastPosition.latitude, lastPosition.longitude,
+                coords.latitude, coords.longitude
+            );
+
+            if (currentMode === "exact" && distance < 2) return;
+
+            const timeDiff = (position.timestamp - lastPosition.timestamp) / 1000;
+            if (timeDiff <= 0) return;
+
+            const speed = (distance / timeDiff) * 3.6;
+
+            if (speed > 2) {
+                totalDistance += distance;
+                segmentDistance += distance;
+                speedReadings.push(speed);
+
+                speedEl.textContent = `Rýchlosť: ${speed.toFixed(2)} km/h`;
+                speedEl.className = "";
+
+                if (totalDistance - lastDistanceReport >= 10) {
+                    distanceEl.textContent = `Prešiel si: ${totalDistance.toFixed(1)} m`;
+                    lastDistanceReport = totalDistance;
+                }
+
+                if (segmentDistance >= 25) {
+                    const avgSpeed = speedReadings.reduce((a, b) => a + b, 0) / speedReadings.length;
+                    const div = document.createElement("div");
+                    div.className = "speed-item";
+                    div.textContent = `Priemerná rýchlosť: ${avgSpeed.toFixed(2)} km/h`;
+
+                    if (avgSpeed >= 13 && avgSpeed <= 20) {
+                        div.classList.add("green");
+                    } else if (avgSpeed >= 8 && avgSpeed <= 13) {
+                        div.classList.add("orange");
+                    }
+
+                    speedListEl.appendChild(div);
+                    segmentDistance = 0;
+                    speedReadings = [];
+                }
+            } else {
+                speedEl.textContent = `Rýchlosť: 0 km/h`;
+                speedEl.className = "yelow";
+            }
+        }
+
+        updateMap(coords.latitude, coords.longitude);
+
+        lastPosition = {
+            latitude: coords.latitude,
+            longitude: coords.longitude,
+            timestamp: position.timestamp
+        };
+    }
+
+    function showError(error) {
+        positionEl.textContent = `Chyba: ${error.message}`;
+    }
+
+    function startTracking() {
+        if (navigator.geolocation) {
+            navigator.geolocation.watchPosition(updatePosition, showError, {
+                enableHighAccuracy: true,
+                maximumAge: 0,
+                timeout: 4000
+            });
+        } else {
+            positionEl.textContent = "Geolokácia nie je podporovaná.";
+        }
+    }
+
+    resetBtn.addEventListener("click", () => {
+        totalDistance = 0;
+        segmentDistance = 0;
+        speedReadings = [];
+        lastDistanceReport = 0;
+        lastPosition = null;
+        distanceEl.textContent = "Prešiel si: 0 m";
+        speedEl.textContent = "Rýchlosť: 0 km/h";
+        speedEl.className = "yelow";
+        speedListEl.innerHTML = "";
+        if (route) route.setLatLngs([]);
+    });
+
+    startTracking();
+</script>
+
+</body>
+</html>
